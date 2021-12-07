@@ -1,0 +1,864 @@
+<style type="text/css" media="screen">
+/*
+.nodes-image {
+	margin:-100;
+}
+*/	
+@import url("//maxcdn.bootstrapcdn.com/font-awesome/4.4.0/css/font-awesome.min.css");
+
+.imageblock .content img, .image img {max-width: 900px;max-height: 300px;}
+.deck h3, .deck h4 {display: block !important;margin-bottom:8px;margin-top:5px;}
+.listingblock {margin:8px;}
+.pull-bottom {position:relative;bottom:1em;}
+.admonitionblock td.icon [class^="fa icon-"]{font-size:2.5em;text-shadow:1px 1px 2px rgba(0,0,0,.5);cursor:default}
+.admonitionblock td.icon .icon-note:before{content:"\f05a";color:#19407c}
+.admonitionblock td.icon .icon-tip:before{content:"\f0eb";text-shadow:1px 1px 2px rgba(155,155,0,.8);color:#111}
+.admonitionblock td.icon .icon-warning:before{content:"\f071";color:#bf6900}
+.admonitionblock td.icon .icon-caution:before{content:"\f06d";color:#bf3400}
+.admonitionblock td.icon .icon-important:before{content:"\f06a";color:#bf0000}
+.admonitionblock.note.speaker { display:none; }
+</style>
+<style type="text/css" media="screen">
+/* #editor.maximize-editor .CodeMirror-code { font-size:24px; line-height:26px; } */
+</style>
+<article class="guide" ng-controller="AdLibDataController">
+  <carousel class="deck container-fluid">
+    <!--slide class="row-fluid">
+      <div class="col-sm-3">
+        <h3>Build a similarity graph from US Census Bureau Data</h3>
+        <p class="lead">Information</p>
+			<!dl>
+				
+				
+				
+				
+				
+			</dl>
+		</div>
+      <div class="col-sm-9">
+        <figure>
+          <img style="width:300px" src=""/>
+        </figure>
+      </div>
+    </slide-->
+    
+
+
+   <h4>Build a similarity graph from US Census Bureau Data</h4>
+   
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>A similarity graph</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>The concept of <strong>similarity</strong> lies at the heart of cluster analysis.
+The Neo4j Graph Data Science library gives us tools for discovering
+the similarity between nodes in a dataset based on the node&#8217;s properties,
+<strong>even if there aren&#8217;t preexisting relationships in our data.</strong></p>
+</div>
+<div class="paragraph">
+<p>This guide will walk you through a tutorial using the Neo4j database and
+the Bloom graph visualization tool. Click the pin at the top right of this
+cell to freeze its position as you work through the tutorial.</p>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Census data</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>For this tutorial, we&#8217;ll use data about metropolitan statistical areas (MSAs)
+from the <a href="https://www.census.gov/data/developers/data-sets/acs-5year.html">2019
+American Community Survey five-year estimates</a> provided by the United States
+Census Bureau.</p>
+</div>
+<div class="paragraph">
+<p>We&#8217;ll use four demographic features to describe each MSA:</p>
+</div>
+<div class="ulist">
+<ul>
+<li>
+<p>population,</p>
+</li>
+<li>
+<p>median household income,</p>
+</li>
+<li>
+<p>median home price, and</p>
+</li>
+<li>
+<p>the percent of the population over age 25 with a bachelors degree.</p>
+</li>
+</ul>
+</div>
+<div class="paragraph">
+<p>In this tutorial, we will use a similarity algorithm to identify pairs of MSAs that are similar based on the four demographic features.
+Then, we will use the similarity relationships to identify clusters of MSAs.</p>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Create a constraint</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Before we load data, we should create a unique constraint for the name of the MSA.
+This will speed up data loading and make the MSA name searchable in Bloom.</p>
+</div>
+<div class="paragraph">
+<p>Click on the cell below to copy the code into a new Browser cell, and then run it.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre mode="cypher"  class="highlight pre-scrollable programlisting cm-s-neo code runnable standalone-example ng-binding" data-lang="cypher" lang="cypher"><!--code class="cypher language-cypher"-->CREATE CONSTRAINT msa_name ON (m:MSA) ASSERT m.name IS UNIQUE<!--/code--></pre>
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Load data</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Use this command to load the MSA data from a CSV file on GitHub.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre mode="cypher"  class="highlight pre-scrollable programlisting cm-s-neo code runnable standalone-example ng-binding" data-lang="cypher" lang="cypher"><!--code class="cypher language-cypher"-->LOAD CSV WITH HEADERS FROM "https://raw.githubusercontent.com/smithna/datasets/main/CensusDemographicsByMetroArea.csv" AS row
+WITH row WHERE row.name CONTAINS 'Metro'
+MERGE (m:MSA {name:row.name})
+SET m.population = toInteger(row.population),
+m.medianHouseholdIncome = toInteger(row.medianHouseholdIncome),
+m.medianHomePrice = toInteger(row.medianHomePrice),
+m.percentOver25WithBachelors = toFloat(row.percentOver25WithBachelors)
+RETURN m<!--/code--></pre>
+</div>
+</div>
+<div class="paragraph">
+<p>Note that the LOAD CSV utility treats every field as a string, so we use
+toInteger() and toFloat() functions to convert the numeric values to the
+appropriate data type. After running the command, you should see that
+MSA nodes have been created.</p>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Euclidean distance</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Unlike most Neo4j projects, <em>we don&#8217;t have any relationships to load at the start.</em>
+Instead, we&#8217;re going to use the Graph Data Science library to discover similar
+nodes and create relationships between them.</p>
+</div>
+<div class="paragraph">
+<p>We&#8217;ll define similarity based on <strong>Euclidean distance</strong>. The Euclidean distance
+formula is an extension of the Pythagorean theorem, which says that the square
+of the length hypotenuse of a right triangle is equal to the sum of the squares
+of the other two sides.</p>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../img/pythagorean_theorem.png" alt="Pythagorean theorem" width="299" height="167">
+</div>
+</div>
+<div class="paragraph">
+<p>In our case, we are comparing MSAs along four dimensions instead of two, but
+the concept is similar. The Euclidean distance between two MSAs is the square
+root of the sum of the squared differences along each of our demographic metrics.</p>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../img/euclidean_distance_formula.png" alt="Euclidean distance formula" width="662" height="72">
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Check property distributions</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Before we calculate distance, we&#8217;ll want each of our four properties to have
+roughly the same range from the smallest value to the largest value. If there
+is a big difference in the ranges, then the properties with a big range will
+dominate the distance calculation; the properties with a small range will hardly
+influence the distance calculation at all. So we need to normalize all of them
+onto the same range.</p>
+</div>
+<div class="paragraph">
+<p>Run this query to see the range of values for each of the four properties that
+we loaded.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre mode="cypher"  class="highlight pre-scrollable programlisting cm-s-neo code runnable standalone-example ng-binding" data-lang="cypher" lang="cypher"><!--code class="cypher language-cypher"-->MATCH (n)
+WITH n,
+["population", "medianHouseholdIncome", "medianHomePrice", "percentOver25WithBachelors" ] AS metrics
+UNWIND metrics as metric
+WITH metric, n[metric] AS value
+RETURN metric, min(value) AS minValue,
+percentileCont(value, 0.25) AS percentile25,
+percentileCont(value, 0.50) AS percentile50,
+percentileCont(value, 0.75) AS percentile75,
+max(value) AS maxValue<!--/code--></pre>
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Property histograms</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>The range of populations goes from 54,773 to 19,294,236. That&#8217;s a huge
+difference from the range of percent of people over 25 with a college degree,
+which runs from 12.9 to 67.4.</p>
+</div>
+<div class="paragraph">
+<p>We can also see that there is a much bigger difference between the 50th and
+75th percentile for population (336,612 citizens) than there is between the
+25th and 50th percentile (94,771.25 citizens).</p>
+</div>
+<div class="paragraph">
+<p>Look at the histograms below that show the distributions of each property
+on both a standard scale and a logarithmic scale.</p>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../img/population.jpg" alt="Population histogram" width="724" height="289">
+</div>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../img/income.jpg" alt="Income histogram" width="724" height="284">
+</div>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../img/homePrice.jpg" alt="Home price histogram" width="724" height="289">
+</div>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../img/education.jpg" alt="Education histogram" width="724" height="289">
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Transform the data</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>All of our metrics look like they approach a more normal distribution if we
+apply a log transformation. This makes sense to me on an intuitive level when
+I consider that adding 10,000 residents to an MSA with a population of 60,000
+would be a big change to the character of the metro area, but adding 10,000
+residents to an MSA with a population of 19 million would make a much smaller
+impact. On the other hand, a 10% change in population would be noticeable in
+an MSA of any scale.</p>
+</div>
+<div class="paragraph">
+<p>Run the command below to apply a log transformation to all four properties.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre mode="cypher"  class="highlight pre-scrollable programlisting cm-s-neo code runnable standalone-example ng-binding" data-lang="cypher" lang="cypher"><!--code class="cypher language-cypher"-->MATCH (m:MSA)
+SET
+m.logPopulation = log(m.population),
+m.logMedianHouseholdIncome = log(m.medianHouseholdIncome),
+m.logMedianHomePrice = log(m.medianHomePrice),
+m.logPercentOver25WithBachelors = log(m.percentOver25WithBachelors)<!--/code--></pre>
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>MinMax scaler</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>The MinMax scaler in the Graph Data Science library will apply the formula
+below to rescale each property value. The minimum value is set to 0, the
+maximum value is set to 1, and all other values fall between 0 and 1
+proportionally to their positions in the original data set.</p>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../img/min_max_formula.png" alt="MinMax scaler formula" width="419" height="96">
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Create in-memory graph</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>We&#8217;ll create an in-memory graph called "metro-graph" to efficiently perform the
+scaling calculation on all the nodes at once. We will load all nodes with the
+label MSA into the in-memory graph. Since we don&#8217;t have any relationships in
+our graph yet, we will use a * wildcard as a placeholder.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre mode="cypher"  class="highlight pre-scrollable programlisting cm-s-neo code runnable standalone-example ng-binding" data-lang="cypher" lang="cypher"><!--code class="cypher language-cypher"-->CALL gds.graph.create('msa-graph',
+'MSA',
+'*',
+{nodeProperties:["logPopulation", "logMedianHouseholdIncome", "logMedianHomePrice", "logPercentOver25WithBachelors"]})<!--/code--></pre>
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Run MinMax scaler</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Run the command below to create a new property in the in-memory graph called
+scaledProperties. The new property will be a vector (an ordered list) of four
+values: population, medianHouseholdIncome, medianHomePrice,
+percentOver25WithBachelors.</p>
+</div>
+<div class="paragraph">
+<p>The MinMax scaler will be applied to each property before it is added to the
+vector, so that all the values are within the range [0, 1].</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre mode="cypher"  class="highlight pre-scrollable programlisting cm-s-neo code runnable standalone-example ng-binding" data-lang="cypher" lang="cypher"><!--code class="cypher language-cypher"-->call gds.alpha.scaleProperties.mutate('msa-graph',
+{nodeProperties: ["logPopulation", "logMedianHouseholdIncome", "logMedianHomePrice", "logPercentOver25WithBachelors"],
+scaler:"MinMax",
+mutateProperty: "scaledProperties"})
+YIELD nodePropertiesWritten<!--/code--></pre>
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Write properties to Graph</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Now we&#8217;ll write those new properties from the in-memory graph back out to the
+main Neo4j graph.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre mode="cypher"  class="highlight pre-scrollable programlisting cm-s-neo code runnable standalone-example ng-binding" data-lang="cypher" lang="cypher"><!--code class="cypher language-cypher"-->CALL gds.graph.writeNodeProperties('msa-graph',['scaledProperties'])<!--/code--></pre>
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Create IS_SIMILAR relationsihps</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>We can use scaledProperties that we just created to calculate the distance
+between the nodes in our graph with the Euclidean distance procedure from the
+Graph Data Science library. The topK parameter tells the algorithm to create
+a relationship called IS_SIMILAR from each node to its 12 nearest neighbors.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre mode="cypher"  class="highlight pre-scrollable programlisting cm-s-neo code runnable standalone-example ng-binding" data-lang="cypher" lang="cypher"><!--code class="cypher language-cypher"-->MATCH (m:MSA)
+WITH COLLECT({item:id(m), weights:m.scaledProperties}) AS data
+CALL gds.alpha.similarity.euclidean.write({data:data, topK:12, writeRelationshipType:"IS_SIMILAR", writeProperty:"distance"})
+YIELD similarityPairs, min, max, mean, p50
+RETURN similarityPairs, min, max, mean, p50<!--/code--></pre>
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Create similarity property</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>The Euclidean distance algorithm tells us <em>how far apart</em> MSAs are in 4-dimensional
+space. <em>The higher the value</em> of the distance property, <em>the less similar</em> the two MSAs
+are. We&#8217;ll calculate a new similarity property by subtracting the distance from 1.
+We can see that the maximum distance was about 0.5, so we&#8217;ll always get a positive
+value for similarity. <em>The higher the value</em> of the similarity property, <em>the more similar</em>
+two MSAs are.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre mode="cypher"  class="highlight pre-scrollable programlisting cm-s-neo code runnable standalone-example ng-binding" data-lang="cypher" lang="cypher"><!--code class="cypher language-cypher"-->MATCH (:MSA)-[s:IS_SIMILAR]-&gt;(:MSA)
+SET s.similarity = 1 - s.distance<!--/code--></pre>
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Rank the IS_SIMILAR relationships</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>We added IS_SIMILAR relationships for the top 12 most similar MSAs to each MSA
+node. It might be convenient to be able to filter those relationships to the
+top 5 or some other top k. Run this query to add a ranking property to the
+relationships.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre mode="cypher"  class="highlight pre-scrollable programlisting cm-s-neo code runnable standalone-example ng-binding" data-lang="cypher" lang="cypher"><!--code class="cypher language-cypher"-->MATCH (m:MSA)-[s:IS_SIMILAR]-&gt;()
+WITH m, s ORDER BY s.similarity DESC
+WITH m, collect(s) as similarities, range(0, 11) AS ranks
+UNWIND ranks AS rank
+WITH rank, similarities[rank] AS rel
+SET rel.rank = rank + 1<!--/code--></pre>
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Open Neo4j Bloom</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Now let&#8217;s take a look at our graph in the Bloom graph visualization
+application. Since this is our first time using Bloom with this dataset,
+click on "Create Perspective." Then, click "Generate Perspective to let
+Bloom set up a perspective for you. Finally, click on your newly generated
+perspective to enter the Bloom scene.</p>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../img/bloom_perspective.png" alt="Choose Bloom perspective" width="399" height="292">
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Configure IS_SIMILAR relationships</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Let&#8217;s configure the display of the "IS_SIMILAR" relationships so that the
+line weight corresponds to the similarity of the nodes. Click Relationships
+on the panel at the right of the screen, and then click the line next to the
+"IS_SIMILAR" relationship.</p>
+</div>
+<div class="paragraph">
+<p>In the fly-out menu that appears, choose "Rule-based." Then, click the plus
+sign to add a new rule-based style.</p>
+</div>
+<div class="paragraph">
+<p>Choose "similarity" from the property key drop down. Select the radio button
+for "range."" Click the "Size" button to create a rule that will control
+line weight. Toggle the button to apply the size rule.</p>
+</div>
+<div class="paragraph">
+<p>In the Minpoint box, enter 0.2 and set the minimum size to 0.25x. In the
+Maxpoint box, enter 1 and set the maximum size to 4x. Your configuration
+should look like the picture below.</p>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../img/style_is_similar.png" alt="Style IS_SIMILAR relationships" width="419" height="300">
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Search for MSAs similar to New York</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Now, let&#8217;s use Bloom to search for an MSA and its closest peers. If you start
+typing "New York" in the Bloom search box, Bloom&#8217;s auto-complete should suggest
+the "New York-Newark-Jersey City, NY-NJ-PA Metro Area."" Press tab to accept
+the suggestion. Once you have a node for New York&#8217;s MSA, Bloom will auto-suggest
+patterns involving that node. Choose the pattern that extends from the New York
+node with an IS_SIMILAR relationship, and press enter.</p>
+</div>
+<div class="paragraph">
+<p>Bloom will return a visualization showing the New York MSA and its 12 most
+similar MSAs based on the four demographic measures that we used.</p>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Filter the IS_SIMILAR Relationships</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Let&#8217;s filter the display to see the top 5 most similar cities to New York.
+Click the funnel icon on the left of the Bloom screen to expand the filter
+panel. Choose IS_SIMILAR in the dropdown. Select the "rank" property. Select
+the "less than or equal to" condition, and set the value to 5. Toggle "Apply
+Filter" to highlight the top 5 strongest similarity relationships for New York.</p>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Create a new in-memory graph</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Now we will use the IS_SIMILAR relationships to detect communities within the
+graph. Create a new in-memory graph that contains the MSA nodes and the
+IS_SIMILAR relationships. We also want to include the similarity property on the
+relationships.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre mode="cypher"  class="highlight pre-scrollable programlisting cm-s-neo code runnable standalone-example ng-binding" data-lang="cypher" lang="cypher"><!--code class="cypher language-cypher"-->CALL gds.graph.create('msa-similarity',
+'MSA',
+'IS_SIMILAR',
+{relationshipProperties: ['similarity']}
+)<!--/code--></pre>
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Run the Louvain algorithm</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Now, we will execute the Louvain community detection algorithm against
+the in-memory graph and write the community ids back to the main Neo4j graph.
+We tell the algorithm to use the similarity property to weight the
+relationships between nodes. By setting the consecutiveIds parameter to
+true, we tell the algorithm that we want the values of the communityId property
+that are generated to be consecutive integers.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre mode="cypher"  class="highlight pre-scrollable programlisting cm-s-neo code runnable standalone-example ng-binding" data-lang="cypher" lang="cypher"><!--code class="cypher language-cypher"-->CALL gds.louvain.write('msa-similarity',
+{relationshipWeightProperty:"similarity",
+ writeProperty:"communityId",consecutiveIds:true})
+YIELD communityCount, modularities
+RETURN communityCount, modularities<!--/code--></pre>
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Get community statistics</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Run the query below to gather summary statistics about the communities we have
+defined. In addition to statistics, we&#8217;re adding context by listing the three
+MSAs in each community with the highest similarity to other MSAs in the same
+community. These MSAs should be typical examples of their community, as opposed
+to other MSAs that might have fewer or weaker in-community relationships.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre mode="cypher"  class="highlight pre-scrollable programlisting cm-s-neo code runnable standalone-example ng-binding" data-lang="cypher" lang="cypher"><!--code class="cypher language-cypher"-->MATCH (m:MSA)
+WITH m
+ORDER BY apoc.coll.sum([(m)-[s:IS_SIMILAR]-&gt;(m2)
+WHERE m.communityId = m2.communityId | s.similarity]) desc
+RETURN m.communityId as communityId,
+count(m) as msaCount,
+avg(m.population) as avgPopulation,
+avg(m.medianHomePrice) as avgHomePrice,
+avg(m.medianHouseholdIncome) as avgIncome,
+avg(m.percentOver25WithBachelors) as avgPctBachelors,
+collect(m.name)[..3] as exampleMSAs
+ORDER BY avgPopulation DESC<!--/code--></pre>
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Name the communities</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Let&#8217;s give the communities names that are more human friendly than the
+auto-generated ids. Feel free to choose names that make sense to you.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre mode="cypher"  class="highlight pre-scrollable programlisting cm-s-neo code runnable standalone-example ng-binding" data-lang="cypher" lang="cypher"><!--code class="cypher language-cypher"-->MATCH (m:MSA)
+  SET m.communityName = CASE m.communityId
+  WHEN 1 THEN "Large metros"
+  WHEN 3 THEN "Medium metros"
+  WHEN 5 THEN "Medium high-cost metros"
+  WHEN 4 THEN "College towns"
+  WHEN 2 THEN "Small middle-income metros"
+  WHEN 0 THEN "Small low-income metros"
+  END
+return m.communityName, m.communityId, count(*)<!--/code--></pre>
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Index community names</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>To make the communityName property searchable in Bloom, create an index on that property.</p>
+</div>
+<div class="listingblock">
+<div class="content">
+<pre mode="cypher"  class="highlight pre-scrollable programlisting cm-s-neo code runnable standalone-example ng-binding" data-lang="cypher" lang="cypher"><!--code class="cypher language-cypher"-->CREATE INDEX msa_community_name IF NOT EXISTS
+FOR (m:MSA)
+ON (m.communityName)<!--/code--></pre>
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Refresh Bloom perspective</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Let&#8217;s take a look at the results in Bloom. We&#8217;ll configure the perspective to reflect the new
+communities we have added. Click the icon in the top left of the screen to open the perspectives
+panel. Then, click the database icon to refresh the perspective to include the new communityName
+property we added to the database.</p>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../img/refresh_perspective.png" alt="Refresh Bloom perspective" width="650" height="255">
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Style MSA node color</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>In the panel on the right side of the screen, click on the circle next to MSA to style the MSA
+nodes. In the fly-out menu that appears, choose "Rule-based." Then, click the plus sign to add
+a new rule-based style. Choose "communityName" from the property key drop down. Select the
+radio button for "unique values." Toggle the button to apply the color rule.</p>
+</div>
+<div class="paragraph">
+<p>Your rule should look like this.</p>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../img/style_msa.png" alt="Style MSA node color" width="406" height="300">
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Style MSA node size</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Let&#8217;s add a second conditional style to set the size of the nodes based on population. Click the
+plus to add a new rule-based styling rule.</p>
+</div>
+<div class="paragraph">
+<p>Choose "population" from the property-key drop down. Select the radio button for "range." Click
+the "size" button to create a rule that will control node size. Toggle the button to apply the
+size rule.</p>
+</div>
+<div class="paragraph">
+<p>In the Minpoint box, enter 55000 and set the minimum size to 1x. In the Maxpoint box, enter
+19000000 and set the maximum size to 4x. Your configuration should look like the box below.</p>
+</div>
+<div class="imageblock">
+<div class="content">
+<img src="../img/msa_node_size.png" alt="Style MSA node size" width="414" height="300">
+</div>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Explore college towns</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Now right click and choose "Clear Scene" from the context menu. In the search box, type "College towns"
+and press enter. Among the results that are returned are the State College, PA Metro, the Ithaca, NY
+Metro, the Champaign-Urbana, IL Metro, and the Charlottesville, VA Metro. Those metro areas are home to
+Pennsylvania State University, Cornell University, the University of Illinois, and the University of
+Virginia. Based on what we know of those metro areas, it seems like the algorithm has picked up some
+clear commonalities.</p>
+</div>
+<div class="paragraph">
+<p>Let&#8217;s see which other metros are most similar to the college towns. Click Command-A to select all the
+nodes. Then right click one of the nodes and chose Expand: &#8592;IS_SIMILAR- from the context menu.</p>
+</div>
+	</div>
+  </div>
+</slide>
+
+
+
+<slide class="row-fluid">
+  <div class="col-sm-12">
+    <h3>Further exploration</h3>
+    <br/>
+    <div>
+      <div class="paragraph">
+<p>Experiment with this dataset to explore similarity graphs further. Decreasing the number of similarity
+relationships created by decreasing the topK parameter or setting the similarityThreshold parameter
+when you run gds.alpha.similarity.euclidean will tend to result in more communities when you run
+gds.louvain. Try scalers other than MinMax when you run gds.alpha.scaleProperties.</p>
+</div>
+<div class="paragraph">
+<p>The graph data science library supports several other similarity algorithms. The K-Nearest Neighbors
+algorithm provides an efficient way to generate links based on cosine similarity.</p>
+</div>
+<div class="paragraph">
+<p>Louvain community detection is one option among several community detection algorithms. See how different
+your results are by running the Label Propagation algorithm.</p>
+</div>
+<div class="paragraph">
+<p>The data CSV on GitHub includes micropolitan statistical areas in addition to metropolitan statistical
+areas. Remove WHERE row.name INCLUDES 'Metro' from the LOAD CSV script to load these nodes and explore
+their properties.</p>
+</div>
+<div class="paragraph">
+<p>You&#8217;ll find that graphs <em>really are everywhere,</em> even when relationships are not apparent in the data
+model at first.</p>
+</div>
+	</div>
+  </div>
+</slide>
+  </carousel>
+</article>

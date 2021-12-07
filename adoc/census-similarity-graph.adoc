@@ -1,0 +1,436 @@
+= Build a similarity graph from US Census Bureau Data
+:imagesdir: ../img
+
+== A similarity graph
+
+The concept of *similarity* lies at the heart of cluster analysis.
+The Neo4j Graph Data Science library gives us tools for discovering
+the similarity between nodes in a dataset based on the node's properties,
+*even if there aren't preexisting relationships in our data.*
+
+This guide will walk you through a tutorial using the Neo4j database and
+the Bloom graph visualization tool. Click the pin at the top right of this
+cell to freeze its position as you work through the tutorial.
+
+== Census data
+
+For this tutorial, we'll use data about metropolitan statistical areas (MSAs)
+from the https://www.census.gov/data/developers/data-sets/acs-5year.html[2019
+American Community Survey five-year estimates] provided by the United States
+Census Bureau.
+
+We'll use four demographic features to describe each MSA:
+
+* population,
+* median household income,
+* median home price, and
+* the percent of the population over age 25 with a bachelors degree.
+
+In this tutorial, we will use a similarity algorithm to identify pairs of MSAs that are similar based on the four demographic features.
+Then, we will use the similarity relationships to identify clusters of MSAs.
+
+== Create a constraint
+
+Before we load data, we should create a unique constraint for the name of the MSA.
+This will speed up data loading and make the MSA name searchable in Bloom.
+
+Click on the cell below to copy the code into a new Browser cell, and then run it.
+
+[source,cypher]
+
+CREATE CONSTRAINT msa_name ON (m:MSA) ASSERT m.name IS UNIQUE
+
+== Load data
+
+Use this command to load the MSA data from a CSV file on GitHub.
+
+[source,cypher]
+LOAD CSV WITH HEADERS FROM "https://raw.githubusercontent.com/smithna/datasets/main/CensusDemographicsByMetroArea.csv" AS row
+WITH row WHERE row.name CONTAINS 'Metro'
+MERGE (m:MSA {name:row.name})
+SET m.population = toInteger(row.population),
+m.medianHouseholdIncome = toInteger(row.medianHouseholdIncome),
+m.medianHomePrice = toInteger(row.medianHomePrice),
+m.percentOver25WithBachelors = toFloat(row.percentOver25WithBachelors)
+RETURN m
+
+Note that the LOAD CSV utility treats every field as a string, so we use
+toInteger() and toFloat() functions to convert the numeric values to the
+appropriate data type. After running the command, you should see that
+MSA nodes have been created.
+
+== Euclidean distance
+Unlike most Neo4j projects, _we don't have any relationships to load at the start._
+Instead, we're going to use the Graph Data Science library to discover similar
+nodes and create relationships between them.
+
+We'll define similarity based on *Euclidean distance*. The Euclidean distance
+formula is an extension of the Pythagorean theorem, which says that the square
+of the length hypotenuse of a right triangle is equal to the sum of the squares
+of the other two sides.
+
+image::pythagorean_theorem.png[Pythagorean theorem,299,167]
+
+In our case, we are comparing MSAs along four dimensions instead of two, but
+the concept is similar. The Euclidean distance between two MSAs is the square
+root of the sum of the squared differences along each of our demographic metrics.
+
+image::euclidean_distance_formula.png[Euclidean distance formula,662,72]
+
+== Check property distributions
+
+Before we calculate distance, we'll want each of our four properties to have
+roughly the same range from the smallest value to the largest value. If there
+is a big difference in the ranges, then the properties with a big range will
+dominate the distance calculation; the properties with a small range will hardly
+influence the distance calculation at all. So we need to normalize all of them
+onto the same range.
+
+Run this query to see the range of values for each of the four properties that
+we loaded.
+
+[source,cypher]
+
+MATCH (n)
+WITH n,
+["population", "medianHouseholdIncome", "medianHomePrice", "percentOver25WithBachelors" ] AS metrics
+UNWIND metrics as metric
+WITH metric, n[metric] AS value
+RETURN metric, min(value) AS minValue,
+percentileCont(value, 0.25) AS percentile25,
+percentileCont(value, 0.50) AS percentile50,
+percentileCont(value, 0.75) AS percentile75,
+max(value) AS maxValue
+
+== Property histograms
+
+The range of populations goes from 54,773 to 19,294,236. That's a huge
+difference from the range of percent of people over 25 with a college degree,
+which runs from 12.9 to 67.4.
+
+We can also see that there is a much bigger difference between the 50th and
+75th percentile for population (336,612 citizens) than there is between the
+25th and 50th percentile (94,771.25 citizens).
+
+Look at the histograms below that show the distributions of each property
+on both a standard scale and a logarithmic scale.
+
+image::population.jpg[Population histogram,724,289]
+image::income.jpg[Income histogram,724,284]
+image::homePrice.jpg[Home price histogram,724,289]
+image::education.jpg[Education histogram,724,289]
+
+== Transform the data
+
+All of our metrics look like they approach a more normal distribution if we
+apply a log transformation. This makes sense to me on an intuitive level when
+I consider that adding 10,000 residents to an MSA with a population of 60,000
+would be a big change to the character of the metro area, but adding 10,000
+residents to an MSA with a population of 19 million would make a much smaller
+impact. On the other hand, a 10% change in population would be noticeable in
+an MSA of any scale.
+
+Run the command below to apply a log transformation to all four properties.
+
+[source,cypher]
+
+MATCH (m:MSA)
+SET
+m.logPopulation = log(m.population),
+m.logMedianHouseholdIncome = log(m.medianHouseholdIncome),
+m.logMedianHomePrice = log(m.medianHomePrice),
+m.logPercentOver25WithBachelors = log(m.percentOver25WithBachelors)
+
+== MinMax scaler
+
+The MinMax scaler in the Graph Data Science library will apply the formula
+below to rescale each property value. The minimum value is set to 0, the
+maximum value is set to 1, and all other values fall between 0 and 1
+proportionally to their positions in the original data set.
+
+image::min_max_formula.png[MinMax scaler formula,419,96]
+
+== Create in-memory graph
+
+We'll create an in-memory graph called "metro-graph" to efficiently perform the
+scaling calculation on all the nodes at once. We will load all nodes with the
+label MSA into the in-memory graph. Since we don't have any relationships in
+our graph yet, we will use a * wildcard as a placeholder.
+
+[source,cypher]
+
+CALL gds.graph.create('msa-graph',
+'MSA',
+'*',
+{nodeProperties:["logPopulation", "logMedianHouseholdIncome", "logMedianHomePrice", "logPercentOver25WithBachelors"]})
+
+== Run MinMax scaler
+
+Run the command below to create a new property in the in-memory graph called
+scaledProperties. The new property will be a vector (an ordered list) of four
+values: population, medianHouseholdIncome, medianHomePrice,
+percentOver25WithBachelors.
+
+The MinMax scaler will be applied to each property before it is added to the
+vector, so that all the values are within the range [0, 1].
+
+[source,cypher]
+
+call gds.alpha.scaleProperties.mutate('msa-graph',
+{nodeProperties: ["logPopulation", "logMedianHouseholdIncome", "logMedianHomePrice", "logPercentOver25WithBachelors"],
+scaler:"MinMax",
+mutateProperty: "scaledProperties"})
+YIELD nodePropertiesWritten
+
+== Write properties to Graph
+
+Now we'll write those new properties from the in-memory graph back out to the
+main Neo4j graph.
+
+[source,cypher]
+
+CALL gds.graph.writeNodeProperties('msa-graph',['scaledProperties'])
+
+== Create IS_SIMILAR relationsihps
+
+We can use scaledProperties that we just created to calculate the distance
+between the nodes in our graph with the Euclidean distance procedure from the
+Graph Data Science library. The topK parameter tells the algorithm to create
+a relationship called IS_SIMILAR from each node to its 12 nearest neighbors.
+
+[source,cypher]
+
+MATCH (m:MSA)
+WITH COLLECT({item:id(m), weights:m.scaledProperties}) AS data
+CALL gds.alpha.similarity.euclidean.write({data:data, topK:12, writeRelationshipType:"IS_SIMILAR", writeProperty:"distance"})
+YIELD similarityPairs, min, max, mean, p50
+RETURN similarityPairs, min, max, mean, p50
+
+== Create similarity property
+
+The Euclidean distance algorithm tells us _how far apart_ MSAs are in 4-dimensional
+space. _The higher the value_ of the distance property, _the less similar_ the two MSAs
+are. We'll calculate a new similarity property by subtracting the distance from 1.
+We can see that the maximum distance was about 0.5, so we'll always get a positive
+value for similarity. _The higher the value_ of the similarity property, _the more similar_
+two MSAs are.
+
+[source,cypher]
+
+MATCH (:MSA)-[s:IS_SIMILAR]->(:MSA)
+SET s.similarity = 1 - s.distance
+
+== Rank the IS_SIMILAR relationships
+
+We added IS_SIMILAR relationships for the top 12 most similar MSAs to each MSA
+node. It might be convenient to be able to filter those relationships to the
+top 5 or some other top k. Run this query to add a ranking property to the
+relationships.
+
+[source,cypher]
+
+MATCH (m:MSA)-[s:IS_SIMILAR]->()
+WITH m, s ORDER BY s.similarity DESC
+WITH m, collect(s) as similarities, range(0, 11) AS ranks
+UNWIND ranks AS rank
+WITH rank, similarities[rank] AS rel
+SET rel.rank = rank + 1
+
+== Open Neo4j Bloom
+
+Now let's take a look at our graph in the Bloom graph visualization
+application. Since this is our first time using Bloom with this dataset,
+click on "Create Perspective." Then, click "Generate Perspective to let
+Bloom set up a perspective for you. Finally, click on your newly generated
+perspective to enter the Bloom scene.
+
+image::bloom_perspective.png[Choose Bloom perspective,399,292]
+
+== Configure IS_SIMILAR relationships
+
+Let's configure the display of the "IS_SIMILAR" relationships so that the
+line weight corresponds to the similarity of the nodes. Click Relationships
+on the panel at the right of the screen, and then click the line next to the
+"IS_SIMILAR" relationship.
+
+In the fly-out menu that appears, choose "Rule-based." Then, click the plus
+sign to add a new rule-based style.
+
+Choose "similarity" from the property key drop down. Select the radio button
+for "range."" Click the "Size" button to create a rule that will control
+line weight. Toggle the button to apply the size rule.
+
+In the Minpoint box, enter 0.2 and set the minimum size to 0.25x. In the
+Maxpoint box, enter 1 and set the maximum size to 4x. Your configuration
+should look like the picture below.
+
+image::style_is_similar.png[Style IS_SIMILAR relationships,419,300]
+
+== Search for MSAs similar to New York
+
+Now, let's use Bloom to search for an MSA and its closest peers. If you start
+typing "New York" in the Bloom search box, Bloom's auto-complete should suggest
+the "New York-Newark-Jersey City, NY-NJ-PA Metro Area."" Press tab to accept
+the suggestion. Once you have a node for New York's MSA, Bloom will auto-suggest
+patterns involving that node. Choose the pattern that extends from the New York
+node with an IS_SIMILAR relationship, and press enter.
+
+Bloom will return a visualization showing the New York MSA and its 12 most
+similar MSAs based on the four demographic measures that we used.
+
+== Filter the IS_SIMILAR Relationships
+
+Let's filter the display to see the top 5 most similar cities to New York.
+Click the funnel icon on the left of the Bloom screen to expand the filter
+panel. Choose IS_SIMILAR in the dropdown. Select the "rank" property. Select
+the "less than or equal to" condition, and set the value to 5. Toggle "Apply
+Filter" to highlight the top 5 strongest similarity relationships for New York.
+
+== Create a new in-memory graph
+
+Now we will use the IS_SIMILAR relationships to detect communities within the
+graph. Create a new in-memory graph that contains the MSA nodes and the
+IS_SIMILAR relationships. We also want to include the similarity property on the
+relationships.
+
+[source,cypher]
+
+CALL gds.graph.create('msa-similarity',
+'MSA',
+'IS_SIMILAR',
+{relationshipProperties: ['similarity']}
+)
+
+== Run the Louvain algorithm
+
+Now, we will execute the Louvain community detection algorithm against
+the in-memory graph and write the community ids back to the main Neo4j graph.
+We tell the algorithm to use the similarity property to weight the
+relationships between nodes. By setting the consecutiveIds parameter to
+true, we tell the algorithm that we want the values of the communityId property
+that are generated to be consecutive integers.
+
+[source,cypher]
+
+CALL gds.louvain.write('msa-similarity',
+{relationshipWeightProperty:"similarity",
+ writeProperty:"communityId",consecutiveIds:true})
+YIELD communityCount, modularities
+RETURN communityCount, modularities
+
+== Get community statistics
+
+Run the query below to gather summary statistics about the communities we have
+defined. In addition to statistics, we're adding context by listing the three
+MSAs in each community with the highest similarity to other MSAs in the same
+community. These MSAs should be typical examples of their community, as opposed
+to other MSAs that might have fewer or weaker in-community relationships.
+
+[source,cypher]
+
+MATCH (m:MSA)
+WITH m
+ORDER BY apoc.coll.sum([(m)-[s:IS_SIMILAR]->(m2)
+WHERE m.communityId = m2.communityId | s.similarity]) desc
+RETURN m.communityId as communityId,
+count(m) as msaCount,
+avg(m.population) as avgPopulation,
+avg(m.medianHomePrice) as avgHomePrice,
+avg(m.medianHouseholdIncome) as avgIncome,
+avg(m.percentOver25WithBachelors) as avgPctBachelors,
+collect(m.name)[..3] as exampleMSAs
+ORDER BY avgPopulation DESC
+
+== Name the communities
+
+Let's give the communities names that are more human friendly than the
+auto-generated ids. Feel free to choose names that make sense to you.
+
+[source,cypher]
+
+MATCH (m:MSA)
+  SET m.communityName = CASE m.communityId
+  WHEN 1 THEN "Large metros"
+  WHEN 3 THEN "Medium metros"
+  WHEN 5 THEN "Medium high-cost metros"
+  WHEN 4 THEN "College towns"
+  WHEN 2 THEN "Small middle-income metros"
+  WHEN 0 THEN "Small low-income metros"
+  END
+return m.communityName, m.communityId, count(*)
+
+== Index community names
+
+To make the communityName property searchable in Bloom, create an index on that property.
+
+[source,cypher]
+
+CREATE INDEX msa_community_name IF NOT EXISTS
+FOR (m:MSA)
+ON (m.communityName)
+
+== Refresh Bloom perspective
+
+Let's take a look at the results in Bloom. We'll configure the perspective to reflect the new
+communities we have added. Click the icon in the top left of the screen to open the perspectives
+panel. Then, click the database icon to refresh the perspective to include the new communityName
+property we added to the database.
+
+image::refresh_perspective.png[Refresh Bloom perspective,650,255]
+
+== Style MSA node color
+
+In the panel on the right side of the screen, click on the circle next to MSA to style the MSA
+nodes. In the fly-out menu that appears, choose "Rule-based." Then, click the plus sign to add
+a new rule-based style. Choose "communityName" from the property key drop down. Select the
+radio button for "unique values." Toggle the button to apply the color rule.
+
+Your rule should look like this.
+
+image::style_msa.png[Style MSA node color,406,300]
+
+== Style MSA node size
+
+Let's add a second conditional style to set the size of the nodes based on population. Click the
+plus to add a new rule-based styling rule.
+
+Choose "population" from the property-key drop down. Select the radio button for "range." Click
+the "size" button to create a rule that will control node size. Toggle the button to apply the
+size rule.
+
+In the Minpoint box, enter 55000 and set the minimum size to 1x. In the Maxpoint box, enter
+19000000 and set the maximum size to 4x. Your configuration should look like the box below.
+
+image::msa_node_size.png[Style MSA node size,414,300]
+
+== Explore college towns
+
+Now right click and choose "Clear Scene" from the context menu. In the search box, type "College towns"
+and press enter. Among the results that are returned are the State College, PA Metro, the Ithaca, NY
+Metro, the Champaign-Urbana, IL Metro, and the Charlottesville, VA Metro. Those metro areas are home to
+Pennsylvania State University, Cornell University, the University of Illinois, and the University of
+Virginia. Based on what we know of those metro areas, it seems like the algorithm has picked up some
+clear commonalities.
+
+Let's see which other metros are most similar to the college towns. Click Command-A to select all the
+nodes. Then right click one of the nodes and chose Expand: <-IS_SIMILAR- from the context menu.
+
+== Further exploration
+
+Experiment with this dataset to explore similarity graphs further. Decreasing the number of similarity
+relationships created by decreasing the topK parameter or setting the similarityThreshold parameter
+when you run gds.alpha.similarity.euclidean will tend to result in more communities when you run
+gds.louvain. Try scalers other than MinMax when you run gds.alpha.scaleProperties.
+
+The graph data science library supports several other similarity algorithms. The K-Nearest Neighbors
+algorithm provides an efficient way to generate links based on cosine similarity.
+
+Louvain community detection is one option among several community detection algorithms. See how different
+your results are by running the Label Propagation algorithm.
+
+The data CSV on GitHub includes micropolitan statistical areas in addition to metropolitan statistical
+areas. Remove WHERE row.name INCLUDES 'Metro' from the LOAD CSV script to load these nodes and explore
+their properties.
+
+You'll find that graphs _really are everywhere,_ even when relationships are not apparent in the data
+model at first.
